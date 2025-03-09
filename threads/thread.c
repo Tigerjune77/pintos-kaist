@@ -27,6 +27,15 @@
 /* List of processes in THREAD_READY state, that is, processes
    that are ready to run but not actually running. */
 static struct list ready_list;
+static struct list sleeping_list; /* List that holds threads in timer_sleep()  */
+
+/* For sorting sleeping_list with increasing order  */
+bool tick_comp (const struct list_elem *a, const struct list_elem *b, void *aux) {
+	struct thread *elem1 = list_entry(a, struct thread, elem);
+	struct thread *elem2 = list_entry(b, struct thread, elem);
+
+	return elem1->awake_ticks <= elem2->awake_ticks ;
+}
 
 /* Idle thread. */
 static struct thread *idle_thread;
@@ -108,6 +117,7 @@ thread_init (void) {
 	/* Init the globla thread context */
 	lock_init (&tid_lock);
 	list_init (&ready_list);
+	list_init (&sleeping_list); 
 	list_init (&destruction_req);
 
 	/* Set up a thread structure for the running thread. */
@@ -133,12 +143,21 @@ thread_start (void) {
 	sema_down (&idle_started);
 }
 
+int64_t
+thread_when_awake (struct thread *t) {
+	ASSERT (is_thread (t));
+	return t->awake_ticks; 
+}
+
 /* Called by the timer interrupt handler at each timer tick.
    Thus, this function runs in an external interrupt context. */
 void
 thread_tick (void) {
 	struct thread *t = thread_current ();
 
+	while (!list_empty(&sleeping_list) && list_entry(list_front(&sleeping_list), struct thread, elem)->awake_ticks <= timer_ticks()) {
+		thread_unblock(list_entry(list_pop_front(&sleeping_list), struct thread, elem));
+	}
 	/* Update statistics. */
 	if (t == idle_thread)
 		idle_ticks++;
@@ -148,7 +167,7 @@ thread_tick (void) {
 #endif
 	else
 		kernel_ticks++;
-
+	
 	/* Enforce preemption. */
 	if (++thread_ticks >= TIME_SLICE)
 		intr_yield_on_return ();
@@ -222,6 +241,18 @@ thread_block (void) {
 	ASSERT (intr_get_level () == INTR_OFF);
 	thread_current ()->status = THREAD_BLOCKED;
 	schedule ();
+}
+
+void 
+thread_sleep_with_ticks (int64_t target) {
+	ASSERT (!intr_context ());
+	ASSERT (intr_get_level () == INTR_OFF ) ;   
+	thread_current ()->awake_ticks = target; 
+
+	list_insert_ordered(&sleeping_list, &thread_current()->elem, tick_comp, NULL);
+	thread_current ()->status = THREAD_BLOCKED;
+
+	schedule (); 
 }
 
 /* Transitions a blocked thread T to the ready-to-run state.
